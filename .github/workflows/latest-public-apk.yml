@@ -1,0 +1,40 @@
+name: Keep only latest APK public
+on:
+  release:
+    types: [published, edited]
+  workflow_dispatch:
+  schedule:
+    - cron: '17 * * * *'
+permissions:
+  contents: write
+concurrency:
+  group: latest-public-apk
+  cancel-in-progress: false
+jobs:
+  archive-older:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Keep newest published APK and retain older releases as drafts
+        shell: python
+        run: |
+          import json, os, subprocess
+          repo = os.environ['GH_REPO']
+          def api(*args):
+              return json.loads(subprocess.check_output(['gh', 'api', *args], text=True))
+          pages = api('--paginate', '--slurp', f'repos/{repo}/releases?per_page=100')
+          releases = [r for page in pages for r in page if not r['draft']]
+          releases.sort(key=lambda r: (r.get('published_at') or '', r['id']), reverse=True)
+          if not releases:
+              print('No published releases.'); raise SystemExit(0)
+          latest = releases[0]
+          if not any(a['name'].lower().endswith('.apk') and a['state'] == 'uploaded' and a['size'] > 0 for a in latest['assets']):
+              print('Newest release has no completed APK; retaining previous downloads.'); raise SystemExit(0)
+          api('--method', 'PATCH', f"repos/{repo}/releases/{latest['id']}", '-f', 'make_latest=true')
+          for release in releases[1:]:
+              api('--method', 'PATCH', f"repos/{repo}/releases/{release['id']}", '-F', 'draft=true')
+              print('Moved to draft:', release['tag_name'])
+          print('Public release:', latest['tag_name'])
